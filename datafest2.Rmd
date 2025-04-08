@@ -1,0 +1,472 @@
+---
+title: "ASA DataFest Duke 2025 - Analysis Code"
+---
+
+ 
+
+```{r}
+library(ggplot2)
+library(dplyr)
+library(grid)  # for unit()
+library(tidyr)
+library(readxl)
+
+
+#first I load the lease data
+lease_data <- read.csv("Leases.csv")
+
+# Filter rows where internal_industry is Legal, Financial Services or Technology because these are important to savill
+filtered_data <- subset(lease_data, internal_industry %in% c("Financial Services and Insurance", 
+                                                            "Legal Services", 
+                                                            "Technology, Advertising, Media, and Information"))
+
+#now i am mapping the unique markets based on geographical proximity to the 10 major markets that savill focuses on
+filtered_data <- filtered_data %>%
+  mutate(market = case_when(
+    market %in% c("Austin") ~ "Austin",
+    market %in% c("Chicago", "Chicago Suburbs") ~ "Chicago",
+    market %in% c("Dallas/Ft Worth") ~ "Dallas/Ft Worth",
+    market %in% c("Houston") ~ "Houston",
+    market %in% c("Los Angeles", "Orange County") ~ "Los Angeles",
+    market %in% c("Manhattan") ~ "Manhattan",
+    market %in% c("Philadelphia") ~ "Philadelphia",
+    market %in% c("San Francisco") ~ "San Francisco",
+    market %in% c("South Bay/San Jose") ~ "South Bay/San Jose",
+    market %in% c("Washington D.C.", "Northern Virginia", "Southern Maryland", "Baltimore") ~ "Washington D.C.",
+    TRUE ~ NA_character_  # Set non-major markets to NA
+  )) %>%
+  filter(!is.na(market))  # Drop rows where market is NA (i.e., not a major market)
+
+
+# Create the 'year_quarter' column
+filtered_data <- filtered_data %>%
+  mutate(
+    # Remove any "Q" prefix and coerce to numeric
+    quarter_num = as.numeric(gsub("Q", "", as.character(quarter))),
+    
+    # Drop rows where year or quarter are missing/invalid
+    year = as.numeric(as.character(year)),
+    year_quarter = ifelse(!is.na(year) & !is.na(quarter_num),
+                          paste0(year, " Q", quarter_num),
+                          NA)
+  ) %>%
+  filter(!is.na(year_quarter))  # Drop rows where 'year_quarter' is NA
+
+# View result
+head(filtered_data)
+```
+
+Now I have a hypothesis about the trends the 3 main industries show across each years quarters, in respect to square footage.
+
+```{r}
+# Create a combined year-quarter label
+plot_data <- filtered_data %>%
+  group_by(internal_industry, year_quarter) %>%
+  summarise(
+    total_leasedSF = sum(leasedSF, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  arrange(year_quarter)
+
+# Chronological ordering for plotting
+plot_data$year_quarter <- factor(plot_data$year_quarter, levels = unique(plot_data$year_quarter))
+
+print(plot_data)
+
+# Plot
+ggplot(plot_data, aes(x = year_quarter, y = total_leasedSF, color = internal_industry, group = internal_industry)) +
+  geom_line(linewidth = 1.2) +
+  geom_point() +
+  labs(
+    title = "Quarterly Leased Square Footage by Industry",
+    x = "Quarter",
+    y = "Total Leased SF",
+    color = "Industry"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),  # Rotating x-axis labels
+    legend.position = "bottom",  # Move the legend to the bottom
+    legend.title = element_text(size = 8),  # Smaller legend title
+    legend.text = element_text(size = 7),  # Smaller legend text
+    legend.key.width = unit(0.8, "cm"),  # Narrower legend keys
+    legend.spacing.x = unit(0.5, "cm")  # Spacing between legend items
+  ) +
+  scale_x_discrete(expand = expansion(mult = c(0.01, 0.05))) +
+  coord_cartesian(expand = FALSE)  # Avoid squishing the plot
+
+```
+
+1. **Tech Industry Dominance**: The Technology, Advertising, Media, and Information sector exhibits the highest variability in leased square footage. Significant peaks in 2019 Q4, 2021 Q1, and 2022 Q1 suggest periods of rapid growth or major leasing activity. This could reflect the dynamic nature of the tech world, responding to emerging opportunities or market trends.
+
+2. **Steady Yet Variable Financial Services**: The Financial Services and Insurance industry shows moderate fluctuations, with peaks in 2019 Q2, 2021 Q3, and 2022 Q4. This indicates periodic increases in leasing, possibly tied to economic cycles or expansions within the sector.
+
+3. **Stability in Legal Services**: The Legal Services industry maintains the lowest and most consistent leased square footage. This stability might reflect a more conservative approach to real estate or less demand for large office spaces compared to tech and finance.
+
+4. **Pandemic Dip**: Across all industries, there's a noticeable decline in 2020 Q2, which aligns with the impact of the COVID-19 pandemic on businesses globally. This is a clear marker of external disruption.
+
+5. **Recovery and Growth**: From 2023 Q1 to 2024 Q4, an upward trend is visible across all industries. This suggests recovery and possible expansion post-pandemic, indicating resilience and growth.
+
+
+
+
+
+
+
+We found out that before 2020 Q1 was considered pre-pandemic, while after 2023 Q1 is considered post-pandemic. Now I want to make heatmaps showing the industry presence by market using square footage totals for pre-pandemic and post-pandemic.
+
+```{r}
+# Create a new dataset (heatmap_data) with market included
+heatmap_data <- filtered_data %>%
+  group_by(internal_industry, market, year_quarter) %>%  # Include 'market' in the grouping
+  summarise(
+    total_leasedSF = sum(leasedSF, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  arrange(year_quarter)
+
+# Separate data into pre-pandemic and post-pandemic
+pre_pandemic_data <- heatmap_data %>%
+  filter(
+    as.numeric(substr(year_quarter, 1, 4)) < 2020 |
+    (as.numeric(substr(year_quarter, 1, 4)) == 2020 & as.numeric(substr(year_quarter, 7, 7)) == 1)
+  )
+
+post_pandemic_data <- heatmap_data %>%
+  filter(
+    as.numeric(substr(year_quarter, 1, 4)) > 2023 |
+    (as.numeric(substr(year_quarter, 1, 4)) == 2023 & as.numeric(substr(year_quarter, 7, 7)) > 1)
+  )
+
+# Calculate the global size range (combined range) for both datasets
+combined_range <- range(c(pre_pandemic_data$total_leasedSF, post_pandemic_data$total_leasedSF), na.rm = TRUE)
+
+# Heatmap for pre-pandemic
+ggplot(pre_pandemic_data, aes(x = market, y = internal_industry, fill = total_leasedSF)) +
+  geom_tile(color = "white") +
+  scale_fill_gradient(low = "white", high = "blue", limits = combined_range) +
+  labs(
+    title = "Pre-Pandemic Industry Presence by Market (Heatmap)",
+    x = "Market",
+    y = "Industry",
+    fill = "Total Leased SF"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    title = element_text(size = 11),
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 10),  # Rotate and adjust x-axis text size
+    axis.text.y = element_text(size = 10),  # Adjust y-axis text size
+    legend.position = "bottom",  # Move legend to bottom
+    legend.title = element_text(size = 9),  # Smaller legend title
+    legend.text = element_text(size = 8),  # Smaller legend text
+    legend.key.width = unit(0.8, "cm"),  # Narrower legend keys
+    legend.spacing.x = unit(0.5, "cm"),  # Spacing between legend items
+    plot.margin = margin(10, 10, 10, 10)  # Adjust plot margins
+  )
+
+# Heatmap for post-pandemic
+ggplot(post_pandemic_data, aes(x = market, y = internal_industry, fill = total_leasedSF)) +
+  geom_tile(color = "white") +
+  scale_fill_gradient(low = "white", high = "blue", limits = combined_range) +
+  labs(
+    title = "Post-Pandemic Industry Presence by Market (Heatmap)",
+    x = "Market",
+    y = "Industry",
+    fill = "Total Leased SF"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    title = element_text(size = 11),
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 10),  # Rotate and adjust x-axis text size
+    axis.text.y = element_text(size = 10),  # Adjust y-axis text size
+    legend.position = "bottom",  # Move legend to bottom
+    legend.title = element_text(size = 9),  # Smaller legend title
+    legend.text = element_text(size = 8),  # Smaller legend text
+    legend.key.width = unit(0.8, "cm"),  # Narrower legend keys
+    legend.spacing.x = unit(0.5, "cm"),  # Spacing between legend items
+    plot.margin = margin(10, 10, 10, 10)  # Adjust plot margins
+  )
+
+```
+
+1. **Pre-Pandemic Analysis**:
+   - Industries were concentrated in specific markets:
+     - Tech: San Francisco, South Bay/San Jose, Austin.
+     - Finance: Manhattan, Chicago.
+     - Legal: Manhattan, Washington D.C.
+   - Major metros held the majority of leased square footage.
+
+2. **Post-Pandemic Analysis**:
+   - More balanced distribution across markets.
+   - Tech industry decentralized, with growth in manhattan and san jose.
+   - Philadelphia emerged as a significant hub for finance.
+   - Legal services slightly expanded beyond traditional centers.
+   - Manhattan retained its dominance across all industries.
+
+3. **Comparison Highlights**:
+   - Pre-pandemic showed concentration; post-pandemic reflects decentralization and adaptability.
+   - Emerging hubs like Austin and Philadelphia played larger roles after the pandemic.
+   - Manhattan remained an economic cornerstone both before and after the pandemic.
+
+
+
+
+Walkability and Transit data taken from https://www.walkscore.com/ which pulls the data from the EPA, https://www.epa.gov/smartgrowth/smart-location-mapping.
+
+```{r}
+# Load your dataset
+walk_transit_score <- read_excel("market_walk_transit_scores.xlsx")
+
+# Check the structure of the dataset to see how it's formatted
+str(walk_transit_score)
+
+# Assuming that 'market' column exists in both the heatmap data and walk_transit_score dataset
+# Combine to find shared fill range
+combined_range <- range(
+  c(pre_pandemic_data$total_leasedSF, post_pandemic_data$total_leasedSF),
+  na.rm = TRUE
+)
+
+# Separate the data into pre-pandemic and post-pandemic
+pre_pandemic_data1 <- heatmap_data %>%
+  filter(
+    as.numeric(substr(year_quarter, 1, 4)) < 2020 | 
+    (as.numeric(substr(year_quarter, 1, 4)) == 2020 & as.numeric(substr(year_quarter, 7, 7)) <= 1)
+  )
+
+post_pandemic_data1 <- heatmap_data %>%
+  filter(
+    as.numeric(substr(year_quarter, 1, 4)) > 2023 | 
+    (as.numeric(substr(year_quarter, 1, 4)) == 2023 & as.numeric(substr(year_quarter, 7, 7)) > 1)
+  )
+
+# Summarize total leased SF by market
+pre_pandemic_summary <- pre_pandemic_data1 %>%
+  group_by(market) %>%
+  summarise(total_leasedSF = sum(total_leasedSF, na.rm = TRUE)) %>%
+  left_join(walk_transit_score, by = "market")
+
+post_pandemic_summary <- post_pandemic_data1 %>%
+  group_by(market) %>%
+  summarise(total_leasedSF = sum(total_leasedSF, na.rm = TRUE)) %>%
+  left_join(walk_transit_score, by = "market")
+
+# Calculate global size range
+combined_range <- range(
+  c(pre_pandemic_summary$total_leasedSF, post_pandemic_summary$total_leasedSF),
+  na.rm = TRUE
+)
+
+# Shared scale range (bubble size mapped to the same range visually)
+bubble_size_range <- c(5, 20)
+
+# Pre-pandemic scatter plot
+ggplot(pre_pandemic_summary, aes(x = average_walkability_Score, y = average_transit_score, label = market)) +
+  geom_point(aes(color = market, size = total_leasedSF), alpha = 0.75) +
+  geom_text(nudge_y = 2, size = 3) +
+  scale_size_continuous(range = bubble_size_range, limits = combined_range) +
+  labs(
+    title = "Pre-Pandemic: Walkability vs Transit Score by Market",
+    x = "Average Walkability Score",
+    y = "Average Transit Score",
+    size = "Total Leased SF",
+    color = "Market"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "bottom",
+    legend.box = "horizontal",  # Align the legend horizontally
+    legend.margin = margin(t = 10, b = 10),  # Add margin to the legend
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  ) +
+  scale_x_continuous(expand = c(0.1, 0))  # Add some padding on the left side (10% expansion)
+
+# Post-pandemic scatter plot
+ggplot(post_pandemic_summary, aes(x = average_walkability_Score, y = average_transit_score, label = market)) +
+  geom_point(aes(color = market, size = total_leasedSF), alpha = 0.75) +
+  geom_text(nudge_y = 2, size = 3) +
+  scale_size_continuous(range = bubble_size_range, limits = combined_range) +
+  labs(
+    title = "Post-Pandemic: Walkability vs Transit Score by Market",
+    x = "Average Walkability Score",
+    y = "Average Transit Score",
+    size = "Total Leased SF",
+    color = "Market"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "bottom",
+    legend.box = "horizontal",  # Align the legend horizontally
+    legend.margin = margin(t = 10, b = 10),  # Add margin to the legend
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  ) +
+  scale_x_continuous(expand = c(0.1, 0))  # Add some padding on the left side (10% expansion)
+
+```
+
+1. **Pre- vs. Post-Pandemic Trends**:
+   - Pre-pandemic industry presence showed concentrated leased square footage in dominant hubs (e.g., tech in San Francisco, finance in Manhattan).
+   - Post-pandemic trends reflect decentralization, with emerging markets like Austin and Philadelphia playing larger roles while hubs like Manhattan maintained dominance.
+
+2. **Walkability and Transit Comparison**:
+   - Pre-pandemic data highlighted a positive correlation between walkability, transit scores, and leased square footage, with Manhattan leading in all aspects.
+   - Post-pandemic, the trend remained consistent for most established markets, while emerging markets like Austin showed growth in leased square footage despite lower walkability and transit scores.
+
+3. **Key Observations**:
+   - Manhattan continued to excel in all analyses, showcasing its resilience and pivotal role.
+   - Emerging hubs gained significance post-pandemic, indicating a shift in industry preferences and adaptations.
+   - While traditional markets remained strong, decentralized growth and broader geographic distribution of industries became prominent themes.
+
+
+
+
+```{r}
+market_occupancy <- read.csv("Major Market Occupancy Data-revised.csv")
+
+# Create 'year_quarter' in market_occupancy dataset
+market_occupancy <- market_occupancy %>%
+  mutate(year_quarter = paste(year, quarter, sep = " "))  # Combine year and quarter as 'year quarter'
+
+# Define the 10 major markets
+major_markets <- c("Austin", "Chicago", "Houston", "Dallas/Ft Worth", "Los Angeles", "Manhattan", 
+                   "Philadelphia", "San Francisco", "South Bay/San Jose", "Washington D.C.")
+
+# Filter for only the 10 major markets
+filtered_market_occupancy <- market_occupancy %>%
+  filter(market %in% major_markets)
+
+# Calculate the average occupancy proportion per year_quarter and market
+average_occupancy <- filtered_market_occupancy %>%
+  group_by(year_quarter, market) %>%
+  summarise(avg_occupancy = mean(avg_occupancy_proportion, na.rm = TRUE), .groups = "drop")  # Drop grouping
+
+# Plot average occupancy proportion across the 10 major markets
+ggplot(average_occupancy, aes(x = year_quarter, y = avg_occupancy, color = market, group = market)) +
+  geom_line() +  # Add lines for each market
+  geom_point() +  # Add points at each data point
+  theme_minimal() +
+  labs(title = "Average Market Occupancy by Year and Quarter", 
+       x = "Year Quarter", 
+       y = "Average Occupancy Proportion", 
+       color = "Market") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),  # Rotate x-axis labels for readability
+        legend.position = "bottom")  # Place legend at the bottom
+```
+
+1. **Pandemic Impact**:
+   - There’s a significant dip in average occupancy in 2020 Q2 across all markets, indicating the disruptive impact of the COVID-19 pandemic.
+   - This sudden drop reflects widespread transitions to remote work and reduced demand for office space.
+
+2. **Gradual Recovery**:
+   - Occupancy levels begin to recover steadily from 2021 onward, suggesting adaptation to new work models and a partial return to office spaces.
+   - By 2023 and beyond, most markets have stabilized or shown incremental growth in occupancy proportions.
+
+3. **Market-Specific Trends**:
+   - **Manhattan** consistently demonstrates the highest occupancy levels throughout the period, reinforcing its status as a core market.
+   - **Austin** and **South Bay/San Jose** exhibit lower occupancy proportions compared to other major cities, possibly reflecting the growth of hybrid work models in these tech-heavy markets.
+   - **Houston** shows slower recovery, with flatter trends indicating weaker demand compared to other regions.
+
+4. **Stabilization Period**:
+   - From 2023 Q1 onward, most markets experience stable or slightly increasing occupancy proportions, signifying market normalization after the pandemic.
+
+
+
+
+
+```{r}
+unemployment <- read.csv("Unemployment.csv")
+unemployment
+```
+```{r}
+
+# 2. Calculate total leased square footage per market pre- and post-pandemic
+pre_presence <- pre_pandemic_data %>%
+  group_by(market) %>%
+  summarise(pre_total_leasedSF = sum(total_leasedSF, na.rm = TRUE))
+
+post_presence <- post_pandemic_data %>%
+  group_by(market) %>%
+  summarise(post_total_leasedSF = sum(total_leasedSF, na.rm = TRUE))
+
+all_presence <- full_join(pre_presence, post_presence, by = "market") %>%
+  mutate(
+    leasedSF_change = post_total_leasedSF - pre_total_leasedSF,
+    leasedSF_pct_change = 100 * leasedSF_change / pre_total_leasedSF
+  )
+
+# 3. State-to-market mapping for 10 major markets
+state_to_market <- tribble(
+  ~state, ~market,
+  "TX", "Austin",
+  "IL", "Chicago", "IN", "Chicago", "WI", "Chicago",
+  "OK", "Dallas/Ft Worth", "TX", "Dallas/Ft Worth",
+  "TX", "Houston",
+  "CA", "Los Angeles", "NV", "Los Angeles",
+  "NY", "Manhattan", "NJ", "Manhattan", "CT", "Manhattan",
+  "PA", "Philadelphia", "DE", "Philadelphia",
+  "CA", "San Francisco", "OR", "San Francisco",
+  "CA", "South Bay/San Jose",
+  "DC", "Washington D.C.", "MD", "Washington D.C.", "VA", "Washington D.C."
+)
+
+# 4. Join unemployment data with market mapping
+unemployment_mapped <- unemployment %>%
+  inner_join(state_to_market, by = "state")
+
+# 5. Aggregate unemployment by market pre- and post-pandemic
+pre_unemployment_market <- unemployment_mapped %>%
+  filter(year < 2020 | (year == 2020 & quarter == "Q1")) %>%
+  group_by(market) %>%
+  summarise(pre_unemployment_rate = mean(unemployment_rate, na.rm = TRUE))
+
+post_unemployment_market <- unemployment_mapped %>%
+  filter(year > 2023 | (year == 2023 & quarter != "Q1")) %>%
+  group_by(market) %>%
+  summarise(post_unemployment_rate = mean(unemployment_rate, na.rm = TRUE))
+
+unemployment_by_market <- full_join(pre_unemployment_market, post_unemployment_market, by = "market") %>%
+  mutate(unemployment_rate_change = post_unemployment_rate - pre_unemployment_rate)
+
+# 6. Final merged dataset for correlation analysis (handling potential missing data)
+final_correlation_df <- all_presence %>%
+  left_join(unemployment_by_market, by = "market") %>%
+  # Ensure that markets with NA values are removed before plotting
+  filter(!is.na(leasedSF_pct_change) & !is.na(unemployment_rate_change))
+
+# Plot correlation
+ggplot(final_correlation_df, aes(x = leasedSF_pct_change, y = unemployment_rate_change)) +
+  geom_point(size = 3, color = "steelblue") +
+  geom_text(aes(label = market), vjust = -0.8, size = 3.5) +
+  geom_smooth(method = "lm", se = FALSE, color = "darkred", linetype = "dashed") +
+  labs(
+    title = "Change in Industry Presence vs Change in Unemployment Rate by Market",
+    x = "Leased SF % Change (Post vs Pre Pandemic)",
+    y = "Unemployment Rate Change"
+  ) +
+  theme_minimal() +
+  scale_x_continuous(expand = c(0.1, 0)  # Add some padding on the left side (10% expansion)
+) +
+  scale_y_continuous(expand = c(0.1, 0))  # Add some padding on the up side (10% expansion
+
+```
+This scatter plot, titled **"Change in Industry Presence vs Change in Unemployment Rate by Market,"** reveals intriguing correlations between changes in leased square footage (SF) post-pandemic and shifts in unemployment rates across various U.S. markets. Here's the analysis:
+
+1. **Positive Correlation**:
+   - The red dashed trend line indicates a **positive correlation** between changes in leased SF and unemployment rates.
+   - Markets with a **smaller decrease in leased SF** (less negative change) tend to experience **higher increases in unemployment rates**.
+
+2. **Market Clusters**:
+   - **South Bay/San Jose** and **San Francisco** display **higher leased SF losses**, consistent with the decentralization of tech hubs post-pandemic.
+   - Markets like **Manhattan** and **Washington D.C.**, while impacted, seem to show resilience with moderate SF losses and unemployment changes.
+
+3. **Austin's Role**:
+   - Austin falls closer to the lower end of the leased SF % change axis, suggesting lesser impact relative to tech-heavy markets, though its unemployment rate change aligns with broader trends.
+
+4. **Impact on Emerging Markets**:
+   - Markets such as **Dallas/Ft Worth** and **Houston** display moderate SF losses, hinting at steadier industry presence compared to highly dynamic markets like the Bay Area.
+
+---
+
+### **Overall Observations**:
+This plot underscores the economic ramifications of the pandemic across different markets. While all were affected, some, like Austin and Dallas, retained relative stability in leased SF, whereas tech-centric markets such as South Bay/San Jose faced steeper reductions in industry presence.
+
